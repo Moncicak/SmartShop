@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { ShoppingCart, Calendar, BarChart2, MessageSquare, LogOut, Loader2 } from "lucide-react";
-import { authApi, listsApi, scheduleApi } from "@/lib/api";
+import { authApi, listsApi, scheduleApi, ordersApi } from "@/lib/api";
 
 interface User {
   id: string;
@@ -18,6 +18,8 @@ interface DashboardStats {
   itemCount: number;
   slotCount: number;
   homeDays: number[]; // distinct weekday indexes (0=Po … 6=Ne) with a home slot
+  monthSpend: number; // total of this month's orders
+  monthOrders: number;
 }
 
 const DAYS_SHORT = ["Po", "Út", "St", "Čt", "Pá", "So", "Ne"];
@@ -43,18 +45,26 @@ export default function DashboardPage() {
       .finally(() => setLoading(false));
 
     // Load real summary data for the status cards (best-effort).
-    Promise.all([listsApi.getAll(), scheduleApi.getAll()])
-      .then(([listsRes, scheduleRes]) => {
+    Promise.all([listsApi.getAll(), scheduleApi.getAll(), ordersApi.getAll()])
+      .then(([listsRes, scheduleRes, ordersRes]) => {
         const lists = listsRes.data as { item_count: number }[];
         const slots = scheduleRes.data as { is_home: boolean; day_of_week: number }[];
+        const orders = ordersRes.data as { total_amount: number | null; created_at: string }[];
         const homeDays = [...new Set(slots.filter((s) => s.is_home).map((s) => s.day_of_week))].sort(
           (a, b) => a - b
         );
+        const now = new Date();
+        const thisMonth = orders.filter((o) => {
+          const d = new Date(o.created_at);
+          return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+        });
         setStats({
           listCount: lists.length,
           itemCount: lists.reduce((sum, l) => sum + (l.item_count || 0), 0),
           slotCount: slots.length,
           homeDays,
+          monthSpend: thisMonth.reduce((sum, o) => sum + (o.total_amount || 0), 0),
+          monthOrders: thisMonth.length,
         });
       })
       .catch(() => setStats(null));
@@ -142,7 +152,14 @@ export default function DashboardPage() {
                 : "",
               color: "purple",
             },
-            { label: "Tento měsíc", value: "0 Kč", sub: "Zatím žádné objednávky", color: "orange" },
+            {
+              label: "Tento měsíc",
+              value: stats ? `${Math.round(stats.monthSpend)} Kč` : "…",
+              sub: stats && stats.monthOrders > 0
+                ? `${stats.monthOrders} ${stats.monthOrders === 1 ? "objednávka" : stats.monthOrders <= 4 ? "objednávky" : "objednávek"}`
+                : "Zatím žádné objednávky",
+              color: "orange",
+            },
           ].map((card) => (
             <div key={card.label} className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
               <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">{card.label}</p>

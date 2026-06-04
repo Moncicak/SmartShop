@@ -307,35 +307,32 @@ async def get_shopping_view(current_user: CurrentUser, db: DB):
     return ShoppingView(items=items, list_ids=list_ids)
 
 
-@router.post("/shopping/mark-ordered", response_model=ShoppingView)
-async def mark_shopping_ordered(current_user: CurrentUser, db: DB):
+async def close_due_cycle(db, user) -> list:
     """Close the current shopping cycle for every due list.
 
     Stamps last_ordered_at (resets the interval so the list disappears until
-    due again) and clears is_checked on its items, so the next cycle starts
-    from a clean slate.
+    due again) and clears is_checked on its items. Returns the affected list ids.
+    Reused by the orders endpoint when an order is placed.
     """
     now = datetime.now(timezone.utc)
     result = await db.execute(
         select(ShoppingList)
-        .where(ShoppingList.user_id == current_user.id, ShoppingList.is_active == True)
+        .where(ShoppingList.user_id == user.id, ShoppingList.is_active == True)
     )
     due_ids = []
     for sl in result.scalars().all():
         if _is_due(sl, now):
             sl.last_ordered_at = now
             due_ids.append(sl.id)
-
     if due_ids:
         await db.execute(
             update(ListItem).where(ListItem.list_id.in_(due_ids)).values(is_checked=False)
         )
     await db.flush()
-    return ShoppingView(items=[], list_ids=[])
+    return due_ids
 
 
-@router.get("/shopping/cart", response_model=Cart)
-async def build_cart(current_user: CurrentUser, db: DB):
+async def compute_cart(db, user) -> Cart:
     """Resolve every due item to a concrete Rohlík product and price the cart.
 
     Generic items ("mléko") are matched by searching their name; existing
@@ -344,7 +341,7 @@ async def build_cart(current_user: CurrentUser, db: DB):
     """
     from app.services.rohlik_client import rohlik
 
-    pairs = await _due_items(db, current_user)
+    pairs = await _due_items(db, user)
     lines: List[CartLine] = []
     total = 0.0
     matched_count = 0
@@ -390,6 +387,11 @@ async def build_cart(current_user: CurrentUser, db: DB):
         matched_count=matched_count,
         unmatched_count=len(pairs) - matched_count,
     )
+
+
+@router.get("/shopping/cart", response_model=Cart)
+async def build_cart(current_user: CurrentUser, db: DB):
+    return await compute_cart(db, current_user)
 
 
 @router.get("/{list_id}", response_model=ShoppingListDetailResponse)

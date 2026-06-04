@@ -5,9 +5,9 @@ import { useRouter } from "next/navigation";
 import {
   ArrowLeft, Plus, Minus, Trash2, Search, ShoppingCart,
   Check, Loader2, X, Package, ListChecks, ChevronRight,
-  CalendarClock, ShoppingBag, Receipt, AlertCircle, Truck,
+  CalendarClock, ShoppingBag, Receipt, AlertCircle, Truck, History, Tag,
 } from "lucide-react";
-import { listsApi, rohlikApi, scheduleApi } from "@/lib/api";
+import { listsApi, rohlikApi, scheduleApi, ordersApi } from "@/lib/api";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -82,6 +82,29 @@ interface DeliverySlot {
   label: string | null;
 }
 
+interface OrderItem {
+  id: string;
+  rohlik_product_id: string;
+  product_name: string;
+  quantity: number;
+  unit_price: number;
+  total_price: number;
+  is_on_sale: boolean;
+}
+
+interface Order {
+  id: string;
+  status: string;
+  total_amount: number | null;
+  currency: string;
+  discount_saved: number;
+  delivery_window_start: string | null;
+  delivery_window_end: string | null;
+  created_at: string;
+  item_count: number;
+  items: OrderItem[];
+}
+
 // ── Frequency config ────────────────────────────────────────────────────────────
 
 const FREQUENCIES = [
@@ -127,7 +150,7 @@ function slotKey(slot: DeliverySlot) {
 
 export default function ListsPage() {
   const router = useRouter();
-  const [mode, setMode] = useState<"lists" | "shopping">("lists");
+  const [mode, setMode] = useState<"lists" | "shopping" | "orders">("lists");
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
@@ -167,12 +190,21 @@ export default function ListsPage() {
               <ShoppingBag className="w-4 h-4" />
               Nákup
             </button>
+            <button
+              onClick={() => setMode("orders")}
+              className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-sm font-medium rounded-lg transition-colors ${
+                mode === "orders" ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700"
+              }`}
+            >
+              <History className="w-4 h-4" />
+              Historie
+            </button>
           </div>
         </div>
       </header>
 
       <main className="flex-1 max-w-2xl mx-auto w-full px-4 py-6">
-        {mode === "lists" ? <ListsManager /> : <ShoppingPanel />}
+        {mode === "lists" ? <ListsManager /> : mode === "shopping" ? <ShoppingPanel /> : <OrdersPanel />}
       </main>
     </div>
   );
@@ -920,11 +952,15 @@ function ShoppingPanel() {
     }
   }
 
-  async function markOrdered() {
-    if (!confirm("Označit aktuální nákup jako objednaný? Měsíční a další seznamy se schovají, dokud znovu nepřijdou na řadu.")) return;
+  async function placeOrder(delivery?: {
+    delivery_date?: string;
+    delivery_start?: string;
+    delivery_end?: string;
+  }) {
+    if (!confirm("Objednat tento nákup? Uloží se do historie a seznamy se uzavřou do dalšího cyklu.")) return;
     setMarking(true);
     try {
-      await listsApi.markOrdered();
+      await ordersApi.create(delivery);
       setCart(null);
       setView("list");
       await load();
@@ -958,7 +994,7 @@ function ShoppingPanel() {
         cart={cart}
         marking={marking}
         onBack={() => setView("list")}
-        onOrdered={markOrdered}
+        onOrdered={placeOrder}
         onRebuild={buildCart}
       />
     );
@@ -990,12 +1026,12 @@ function ShoppingPanel() {
           </p>
         </div>
         <button
-          onClick={markOrdered}
+          onClick={() => placeOrder()}
           disabled={marking}
           className="flex items-center gap-1.5 px-3 py-2 bg-green-600 hover:bg-green-700 disabled:opacity-40 text-white text-sm font-medium rounded-lg transition-colors"
         >
           {marking ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-          Objednáno
+          Objednat
         </button>
       </div>
 
@@ -1044,7 +1080,11 @@ function CartView({
   cart: CartData;
   marking: boolean;
   onBack: () => void;
-  onOrdered: () => void;
+  onOrdered: (delivery?: {
+    delivery_date?: string;
+    delivery_start?: string;
+    delivery_end?: string;
+  }) => void;
   onRebuild: () => void;
 }) {
   const [picker, setPicker] = useState<CartLine | null>(null);
@@ -1219,12 +1259,22 @@ function CartView({
           </span>
         </div>
         <button
-          onClick={onOrdered}
+          onClick={() =>
+            onOrdered(
+              selectedSlot
+                ? {
+                    delivery_date: selectedSlot.date,
+                    delivery_start: selectedSlot.start_time,
+                    delivery_end: selectedSlot.end_time,
+                  }
+                : undefined
+            )
+          }
           disabled={marking}
           className="w-full flex items-center justify-center gap-2 px-3 py-2.5 bg-green-600 hover:bg-green-700 disabled:opacity-40 text-white text-sm font-semibold rounded-lg transition-colors"
         >
           {marking ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-          Objednáno
+          Objednat
         </button>
       </div>
     </div>
@@ -1484,6 +1534,129 @@ function ShoppingItemRow({ item, onToggle }: { item: ShoppingItem; onToggle: () 
       <span className="text-sm text-gray-500 flex-shrink-0">
         {item.quantity % 1 === 0 ? item.quantity : item.quantity.toFixed(1)} {item.unit || "ks"}
       </span>
+    </div>
+  );
+}
+
+// ── Mode: Historie (order history) ──────────────────────────────────────────────
+
+function fmtOrderDate(iso: string) {
+  return new Date(iso).toLocaleString("cs-CZ", {
+    day: "numeric", month: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit",
+  });
+}
+
+function fmtDeliveryWindow(startIso: string | null, endIso: string | null) {
+  if (!startIso || !endIso) return null;
+  const datePart = new Date(startIso).toLocaleDateString("cs-CZ", {
+    day: "numeric", month: "numeric", timeZone: "UTC",
+  });
+  const t = (iso: string) =>
+    new Date(iso).toLocaleTimeString("cs-CZ", { hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
+  return `${datePart} · ${t(startIso)}–${t(endIso)}`;
+}
+
+function OrdersPanel() {
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data } = await ordersApi.getAll();
+        setOrders(data);
+      } catch {
+        setOrders([]);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
+      </div>
+    );
+  }
+
+  if (orders.length === 0) {
+    return (
+      <div className="text-center py-16 text-gray-400">
+        <History className="w-12 h-12 mx-auto mb-3 opacity-30" />
+        <p className="font-medium text-gray-500">Zatím žádné objednávky</p>
+        <p className="text-sm mt-1">Sestav košík v Nákupu a klikni na „Objednat" — objeví se tady.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {orders.map((order) => (
+        <OrderCard key={order.id} order={order} />
+      ))}
+    </div>
+  );
+}
+
+function OrderCard({ order }: { order: Order }) {
+  const [open, setOpen] = useState(false);
+  const delivery = fmtDeliveryWindow(order.delivery_window_start, order.delivery_window_end);
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="w-full px-4 py-3.5 flex items-center gap-3 text-left hover:bg-gray-50 transition-colors"
+      >
+        <div className="w-9 h-9 rounded-lg bg-green-100 flex items-center justify-center flex-shrink-0">
+          <Receipt className="w-4 h-4 text-green-600" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-semibold text-gray-900">{fmtOrderDate(order.created_at)}</p>
+          <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+            <span className="text-xs text-gray-400">
+              {order.item_count} {pluralItems(order.item_count)}
+            </span>
+            {delivery && (
+              <span className="text-xs text-gray-400 flex items-center gap-0.5">
+                <Truck className="w-3 h-3" /> {delivery}
+              </span>
+            )}
+            {order.discount_saved > 0 && (
+              <span className="text-xs text-orange-600 flex items-center gap-0.5">
+                <Tag className="w-3 h-3" /> ušetřeno {order.discount_saved.toFixed(2)} Kč
+              </span>
+            )}
+          </div>
+        </div>
+        <div className="text-right flex-shrink-0">
+          <p className="text-base font-bold text-gray-900">
+            {order.total_amount?.toFixed(2) ?? "—"} Kč
+          </p>
+          <ChevronRight
+            className={`w-4 h-4 text-gray-300 ml-auto transition-transform ${open ? "rotate-90" : ""}`}
+          />
+        </div>
+      </button>
+
+      {open && (
+        <div className="border-t border-gray-100 px-4 py-3 space-y-2 bg-gray-50/50">
+          {order.items.map((it) => (
+            <div key={it.id} className="flex items-center gap-2 text-sm">
+              <span className="text-gray-400 text-xs w-8 flex-shrink-0">{fmtNum(it.quantity)}×</span>
+              <span className="flex-1 min-w-0 text-gray-700 truncate">{it.product_name}</span>
+              {it.is_on_sale && (
+                <span className="text-xs bg-orange-100 text-orange-600 px-1.5 py-0.5 rounded font-medium flex-shrink-0">
+                  sleva
+                </span>
+              )}
+              <span className="text-gray-900 font-medium flex-shrink-0">{it.total_price.toFixed(2)} Kč</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

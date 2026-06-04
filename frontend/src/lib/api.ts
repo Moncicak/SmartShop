@@ -60,7 +60,6 @@ export const listsApi = {
 
   // Merged shopping view (all lists currently due)
   getShopping: () => api.get("/lists/shopping"),
-  markOrdered: () => api.post("/lists/shopping/mark-ordered"),
 
   // Priced cart: resolves items to Rohlík products + totals (slower, hits Rohlík)
   getCart: () => api.get("/lists/shopping/cart"),
@@ -99,6 +98,15 @@ export const listsApi = {
 export const rohlikApi = {
   search: (q: string) => api.get("/lists/rohlik/search", { params: { q } }),
   discounted: () => api.get("/lists/rohlik/discounted"),
+};
+
+export const ordersApi = {
+  getAll: () => api.get("/orders"),
+  create: (delivery?: {
+    delivery_date?: string;
+    delivery_start?: string;
+    delivery_end?: string;
+  }) => api.post("/orders", delivery ?? {}),
 };
 
 export const scheduleApi = {
