@@ -2,12 +2,17 @@ FROM python:3.13-slim
 
 WORKDIR /app
 
-# System deps
+# System deps (incl. Node.js — needed to run the Rohlík MCP server over stdio)
 RUN apt-get update && apt-get install -y \
     gcc \
     libpq-dev \
     curl \
+    nodejs \
+    npm \
     && rm -rf /var/lib/apt/lists/*
+
+# Pre-install the Rohlík MCP server so runtime doesn't fetch it from the network
+RUN npm install -g @tomaspavlin/rohlik-mcp
 
 # Python deps
 COPY requirements.txt .

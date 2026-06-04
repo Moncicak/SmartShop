@@ -1,7 +1,7 @@
 """Schedule CRUD endpoints — stub for Phase 1, expanded in Phase 4."""
 import uuid
 from datetime import datetime, timedelta
-from typing import List
+from typing import List, Optional
 from fastapi import APIRouter, HTTPException, status, Query
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -49,6 +49,21 @@ class DeliverySlotSuggestion(BaseModel):
     label: str | None
 
 
+async def _mcp_delivery_suggestions(user, home_slots) -> Optional[List[DeliverySlotSuggestion]]:
+    """Real Rohlík delivery slots (via MCP) intersected with the user's home windows.
+
+    Returns None → caller falls back to the schedule-based heuristic.
+
+    TODO(creds): with a connected account, decrypt the password, call
+    `rohlik_mcp.get_delivery_slots(email, password)`, parse the (currently unknown)
+    payload shape, and keep only windows overlapping an is_home slot — wrapped in a
+    timeout so a slow/failed MCP call never blocks the endpoint. For now we return
+    None *without* a round-trip so the cart view stays fast; the MCP plumbing itself
+    is verified via /rohlik-mcp/status?probe=true.
+    """
+    return None
+
+
 @router.get("/", response_model=List[ScheduleSlotResponse])
 async def get_schedule(current_user: CurrentUser, db: DB):
     result = await db.execute(
@@ -87,6 +102,13 @@ async def get_delivery_suggestions(
     home_slots = result.scalars().all()
     if not home_slots:
         return []
+
+    # Opt-in: real Rohlík slots via MCP, intersected with home windows.
+    # Falls through to the heuristic on any failure or when not connected.
+    if current_user.rohlik_connected:
+        mcp_result = await _mcp_delivery_suggestions(current_user, home_slots)
+        if mcp_result is not None:
+            return mcp_result
 
     by_day: dict[int, list] = {}
     for s in home_slots:

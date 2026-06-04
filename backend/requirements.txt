@@ -21,6 +21,9 @@ celery[redis]==5.4.0
 anthropic==0.39.0
 langgraph==0.2.56
 
+# MCP client (for Rohlík MCP server over stdio)
+mcp==1.1.2
+
 # HTTP client (for Rohlik, Revolut)
 httpx==0.27.2
 

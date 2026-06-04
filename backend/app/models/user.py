@@ -26,6 +26,11 @@ class User(Base, TimestampMixin):
     revolut_refresh_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     revolut_connected: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
+    # Rohlík account (used by the MCP integration to log in on the user's behalf)
+    rohlik_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    rohlik_password_enc: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # Fernet-encrypted
+    rohlik_connected: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
     # Firebase push token
     fcm_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 

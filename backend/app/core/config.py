@@ -34,7 +34,8 @@ class Settings(BaseSettings):
     def allowed_origins_list(self) -> List[str]:
         return [o.strip() for o in self.ALLOWED_ORIGINS.split(",")]
 
-    # Rohlík
+    # Rohlík (credentials are now stored per-user, encrypted, in the DB; only the
+    # base URL stays global)
     ROHLIK_EMAIL: str = ""
     ROHLIK_PASSWORD: str = ""
     ROHLIK_BASE_URL: str = "https://www.rohlik.cz"

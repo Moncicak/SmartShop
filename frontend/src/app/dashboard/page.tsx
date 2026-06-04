@@ -3,8 +3,8 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ShoppingCart, Calendar, BarChart2, MessageSquare, LogOut, Loader2 } from "lucide-react";
-import { authApi, listsApi, scheduleApi, ordersApi } from "@/lib/api";
+import { ShoppingCart, Calendar, BarChart2, MessageSquare, LogOut, Loader2, Settings } from "lucide-react";
+import { authApi, listsApi, scheduleApi, ordersApi, rohlikMcpApi } from "@/lib/api";
 
 interface User {
   id: string;
@@ -20,6 +20,7 @@ interface DashboardStats {
   homeDays: number[]; // distinct weekday indexes (0=Po … 6=Ne) with a home slot
   monthSpend: number; // total of this month's orders
   monthOrders: number;
+  rohlikConnected: boolean;
 }
 
 const DAYS_SHORT = ["Po", "Út", "St", "Čt", "Pá", "So", "Ne"];
@@ -45,11 +46,17 @@ export default function DashboardPage() {
       .finally(() => setLoading(false));
 
     // Load real summary data for the status cards (best-effort).
-    Promise.all([listsApi.getAll(), scheduleApi.getAll(), ordersApi.getAll()])
-      .then(([listsRes, scheduleRes, ordersRes]) => {
+    Promise.all([
+      listsApi.getAll(),
+      scheduleApi.getAll(),
+      ordersApi.getAll(),
+      rohlikMcpApi.getStatus().catch(() => ({ data: { connected: false } })),
+    ])
+      .then(([listsRes, scheduleRes, ordersRes, rohlikRes]) => {
         const lists = listsRes.data as { item_count: number }[];
         const slots = scheduleRes.data as { is_home: boolean; day_of_week: number }[];
         const orders = ordersRes.data as { total_amount: number | null; created_at: string }[];
+        const rohlikConnected = Boolean((rohlikRes.data as { connected?: boolean })?.connected);
         const homeDays = [...new Set(slots.filter((s) => s.is_home).map((s) => s.day_of_week))].sort(
           (a, b) => a - b
         );
@@ -65,6 +72,7 @@ export default function DashboardPage() {
           homeDays,
           monthSpend: thisMonth.reduce((sum, o) => sum + (o.total_amount || 0), 0),
           monthOrders: thisMonth.length,
+          rohlikConnected,
         });
       })
       .catch(() => setStats(null));
@@ -98,6 +106,13 @@ export default function DashboardPage() {
             <span className="text-sm text-gray-600 hidden sm:block">
               {user?.full_name || user?.email}
             </span>
+            <Link
+              href="/dashboard/settings"
+              className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-500 hover:text-gray-700 transition-colors"
+              title="Nastavení"
+            >
+              <Settings className="w-4 h-4" />
+            </Link>
             <button
               onClick={logout}
               className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-red-600 transition-colors"
@@ -131,10 +146,10 @@ export default function DashboardPage() {
               color: "blue",
             },
             {
-              label: "Revolut",
-              value: user?.revolut_connected ? "Připojen" : "Nepřipojen",
-              sub: "Platební účet",
-              color: user?.revolut_connected ? "green" : "gray",
+              label: "Rohlík",
+              value: stats ? (stats.rohlikConnected ? "Připojeno" : "Nepřipojeno") : "…",
+              sub: stats?.rohlikConnected ? "Účet připojen" : "Připoj v nastavení",
+              color: stats?.rohlikConnected ? "green" : "gray",
             },
             {
               label: "Rozvrh",

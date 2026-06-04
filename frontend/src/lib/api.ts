@@ -109,6 +109,13 @@ export const ordersApi = {
   }) => api.post("/orders", delivery ?? {}),
 };
 
+export const rohlikMcpApi = {
+  getStatus: (probe = false) => api.get("/rohlik-mcp/status", { params: { probe } }),
+  connect: (email: string, password: string) =>
+    api.post("/rohlik-mcp/connect", { email, password }),
+  disconnect: () => api.post("/rohlik-mcp/disconnect"),
+};
+
 export const scheduleApi = {
   getAll: () => api.get("/schedule/"),
   getDeliverySlots: (days = 7) =>
