@@ -20,6 +20,7 @@ node_modules/
 out/
 dist/
 .turbo/
+*.tsbuildinfo
 
 # Docker volumes (local)
 .postgres_data/
@@ -39,6 +40,12 @@ logs/
 
 # Alembic
 # (versions are committed, but not __pycache__)
+
+# Celery Beat (runtime scheduler state)
+celerybeat-schedule
+celerybeat-schedule-shm
+celerybeat-schedule-wal
+celerybeat.pid
 
 # Uploads / temp
 uploads/
