@@ -2,8 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { ShoppingCart, Calendar, BarChart2, MessageSquare, LogOut, Loader2 } from "lucide-react";
-import { authApi } from "@/lib/api";
+import { authApi, listsApi, scheduleApi } from "@/lib/api";
 
 interface User {
   id: string;
@@ -12,16 +13,51 @@ interface User {
   revolut_connected: boolean;
 }
 
+interface DashboardStats {
+  listCount: number;
+  itemCount: number;
+  slotCount: number;
+  homeDays: number[]; // distinct weekday indexes (0=Po … 6=Ne) with a home slot
+}
+
+const DAYS_SHORT = ["Po", "Út", "St", "Čt", "Pá", "So", "Ne"];
+
+function pluralItems(n: number) {
+  return n === 1 ? "položka" : n >= 2 && n <= 4 ? "položky" : "položek";
+}
+
+function pluralDays(n: number) {
+  return n === 1 ? "den" : n >= 2 && n <= 4 ? "dny" : "dní";
+}
+
 export default function DashboardPage() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [stats, setStats] = useState<DashboardStats | null>(null);
 
   useEffect(() => {
     authApi.me()
       .then((res) => setUser(res.data))
       .catch(() => router.push("/login"))
       .finally(() => setLoading(false));
+
+    // Load real summary data for the status cards (best-effort).
+    Promise.all([listsApi.getAll(), scheduleApi.getAll()])
+      .then(([listsRes, scheduleRes]) => {
+        const lists = listsRes.data as { item_count: number }[];
+        const slots = scheduleRes.data as { is_home: boolean; day_of_week: number }[];
+        const homeDays = [...new Set(slots.filter((s) => s.is_home).map((s) => s.day_of_week))].sort(
+          (a, b) => a - b
+        );
+        setStats({
+          listCount: lists.length,
+          itemCount: lists.reduce((sum, l) => sum + (l.item_count || 0), 0),
+          slotCount: slots.length,
+          homeDays,
+        });
+      })
+      .catch(() => setStats(null));
   }, [router]);
 
   function logout() {
@@ -76,10 +112,37 @@ export default function DashboardPage() {
         {/* Status cards */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-8">
           {[
-            { label: "Nákupní seznam", value: "—", sub: "Žádné položky", color: "blue" },
-            { label: "Revolut", value: user?.revolut_connected ? "Připojen" : "Nepřipojen", sub: "Platební účet", color: user?.revolut_connected ? "green" : "gray" },
-            { label: "Rozvrh", value: "—", sub: "Sloty nenastaveny", color: "purple" },
-            { label: "Tento měsíc", value: "0 Kč", sub: "Celková útrata", color: "orange" },
+            {
+              label: "Nákupní seznamy",
+              value: stats ? (stats.listCount > 0 ? String(stats.listCount) : "—") : "…",
+              sub: stats && stats.listCount > 0
+                ? `${stats.itemCount} ${pluralItems(stats.itemCount)} celkem`
+                : "Žádné seznamy",
+              color: "blue",
+            },
+            {
+              label: "Revolut",
+              value: user?.revolut_connected ? "Připojen" : "Nepřipojen",
+              sub: "Platební účet",
+              color: user?.revolut_connected ? "green" : "gray",
+            },
+            {
+              label: "Rozvrh",
+              value: stats
+                ? (stats.homeDays.length > 0
+                    ? `${stats.homeDays.length} ${pluralDays(stats.homeDays.length)}`
+                    : "—")
+                : "…",
+              sub: stats
+                ? (stats.homeDays.length > 0
+                    ? `Doma: ${stats.homeDays.map((d) => DAYS_SHORT[d]).join(" · ")}`
+                    : stats.slotCount > 0
+                    ? "Žádný den doma"
+                    : "Sloty nenastaveny")
+                : "",
+              color: "purple",
+            },
+            { label: "Tento měsíc", value: "0 Kč", sub: "Zatím žádné objednávky", color: "orange" },
           ].map((card) => (
             <div key={card.label} className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
               <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">{card.label}</p>
@@ -121,9 +184,10 @@ export default function DashboardPage() {
               badge: "Fáze 6",
             },
           ].map((tile) => (
-            <div
+            <Link
               key={tile.title}
-              className="bg-white rounded-xl p-6 border border-gray-200 shadow-sm hover:shadow-md transition-shadow cursor-pointer group"
+              href={tile.href}
+              className="bg-white rounded-xl p-6 border border-gray-200 shadow-sm hover:shadow-md transition-shadow cursor-pointer group block"
             >
               <div className="flex items-start justify-between mb-3">
                 <div className="w-10 h-10 rounded-lg bg-blue-100 flex items-center justify-center group-hover:bg-blue-600 transition-colors">
@@ -135,7 +199,7 @@ export default function DashboardPage() {
               </div>
               <h3 className="font-semibold text-gray-900 mb-1">{tile.title}</h3>
               <p className="text-sm text-gray-500">{tile.desc}</p>
-            </div>
+            </Link>
           ))}
         </div>
       </main>

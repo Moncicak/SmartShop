@@ -1,8 +1,9 @@
 import uuid
 from typing import Optional, List
 from enum import Enum as PyEnum
+from datetime import datetime
 
-from sqlalchemy import String, Boolean, Integer, Float, ForeignKey, Text, Enum
+from sqlalchemy import String, Boolean, Integer, Float, ForeignKey, Text, Enum, DateTime
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
 
@@ -34,6 +35,12 @@ class ShoppingList(Base, TimestampMixin):
     )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
+    # When this list was last included in an order — drives the "due" logic
+    # for the merged shopping view (monthly items reappear only when due).
+    last_ordered_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # Relationships
     user: Mapped["User"] = relationship(back_populates="shopping_lists")
     items: Mapped[List["ListItem"]] = relationship(
@@ -57,6 +64,7 @@ class ListItem(Base, TimestampMixin):
     # Either a specific Rohlik product or a generic description
     rohlik_product_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
     rohlik_product_name: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    rohlik_image_url: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
     generic_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
     quantity: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)

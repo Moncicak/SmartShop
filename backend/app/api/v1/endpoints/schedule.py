@@ -11,6 +11,15 @@ from app.models.schedule import ScheduleSlot, DayOfWeek, ActivityType
 router = APIRouter()
 
 
+class ScheduleSlotUpdate(BaseModel):
+    day_of_week: int | None = None
+    start_time: str | None = None
+    end_time: str | None = None
+    activity_type: ActivityType | None = None
+    label: str | None = None
+    is_home: bool | None = None
+
+
 class ScheduleSlotCreate(BaseModel):
     day_of_week: int  # 0=Monday ... 6=Sunday
     start_time: str   # "HH:MM"
@@ -65,6 +74,41 @@ async def create_slot(body: ScheduleSlotCreate, current_user: CurrentUser, db: D
         is_home=body.is_home,
     )
     db.add(slot)
+    await db.flush()
+    return ScheduleSlotResponse(
+        id=str(slot.id),
+        day_of_week=slot.day_of_week,
+        start_time=slot.start_time.strftime("%H:%M"),
+        end_time=slot.end_time.strftime("%H:%M"),
+        activity_type=slot.activity_type.value,
+        label=slot.label,
+        is_home=slot.is_home,
+    )
+
+
+@router.patch("/{slot_id}", response_model=ScheduleSlotResponse)
+async def update_slot(slot_id: uuid.UUID, body: ScheduleSlotUpdate, current_user: CurrentUser, db: DB):
+    from datetime import time
+    result = await db.execute(
+        select(ScheduleSlot).where(
+            ScheduleSlot.id == slot_id, ScheduleSlot.user_id == current_user.id
+        )
+    )
+    slot = result.scalar_one_or_none()
+    if not slot:
+        raise HTTPException(status_code=404, detail="Slot not found")
+    if body.day_of_week is not None:
+        slot.day_of_week = body.day_of_week
+    if body.start_time is not None:
+        slot.start_time = time(*map(int, body.start_time.split(":")))
+    if body.end_time is not None:
+        slot.end_time = time(*map(int, body.end_time.split(":")))
+    if body.activity_type is not None:
+        slot.activity_type = body.activity_type
+    if body.label is not None:
+        slot.label = body.label
+    if body.is_home is not None:
+        slot.is_home = body.is_home
     await db.flush()
     return ScheduleSlotResponse(
         id=str(slot.id),

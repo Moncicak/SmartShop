@@ -7,14 +7,12 @@ export const api = axios.create({
   headers: { "Content-Type": "application/json" },
 });
 
-// Attach access token from localStorage on every request
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem("access_token");
   if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
 });
 
-// Auto-refresh on 401
 api.interceptors.response.use(
   (res) => res,
   async (error) => {
@@ -41,13 +39,71 @@ api.interceptors.response.use(
   }
 );
 
-// Auth helpers
 export const authApi = {
   register: (email: string, password: string, full_name?: string) =>
     api.post("/auth/register", { email, password, full_name }),
-
   login: (email: string, password: string) =>
     api.post("/auth/login", { email, password }),
-
   me: () => api.get("/auth/me"),
+};
+
+export const listsApi = {
+  getAll: () => api.get("/lists/"),
+  create: (name: string, frequency = "weekly") =>
+    api.post("/lists/", { name, frequency }),
+  getOne: (listId: string) => api.get(`/lists/${listId}`),
+  update: (
+    listId: string,
+    patch: { name?: string; description?: string; frequency?: string }
+  ) => api.patch(`/lists/${listId}`, patch),
+  delete: (listId: string) => api.delete(`/lists/${listId}`),
+
+  // Merged shopping view (all lists currently due)
+  getShopping: () => api.get("/lists/shopping"),
+  markOrdered: () => api.post("/lists/shopping/mark-ordered"),
+
+  addItem: (
+    listId: string,
+    item: {
+      generic_name?: string;
+      rohlik_product_id?: string;
+      rohlik_product_name?: string;
+      rohlik_image_url?: string;
+      quantity?: number;
+      unit?: string;
+      notes?: string;
+    }
+  ) => api.post(`/lists/${listId}/items`, item),
+
+  updateItem: (
+    listId: string,
+    itemId: string,
+    patch: { quantity?: number; unit?: string; notes?: string; is_checked?: boolean }
+  ) => api.patch(`/lists/${listId}/items/${itemId}`, patch),
+
+  deleteItem: (listId: string, itemId: string) =>
+    api.delete(`/lists/${listId}/items/${itemId}`),
+};
+
+export const rohlikApi = {
+  search: (q: string) => api.get("/lists/rohlik/search", { params: { q } }),
+  discounted: () => api.get("/lists/rohlik/discounted"),
+};
+
+export const scheduleApi = {
+  getAll: () => api.get("/schedule/"),
+  create: (slot: {
+    day_of_week: number;
+    start_time: string;
+    end_time: string;
+    activity_type: string;
+    label?: string;
+    is_home?: boolean;
+  }) => api.post("/schedule/", slot),
+  update: (id: string, patch: {
+    day_of_week?: number;
+    start_time?: string;
+    end_time?: string;
+  }) => api.patch(`/schedule/${id}`, patch),
+  delete: (id: string) => api.delete(`/schedule/${id}`),
 };

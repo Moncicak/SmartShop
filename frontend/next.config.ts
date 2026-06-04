@@ -2,6 +2,12 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   output: "standalone",
+  images: {
+    remotePatterns: [
+      { protocol: "https", hostname: "www.rohlik.cz" },
+      { protocol: "https", hostname: "cdn.rohlik.cz" },
+    ],
+  },
   experimental: {
     serverActions: {
       allowedOrigins: ["localhost:3000"],
