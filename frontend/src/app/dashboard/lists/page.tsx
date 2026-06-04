@@ -5,9 +5,9 @@ import { useRouter } from "next/navigation";
 import {
   ArrowLeft, Plus, Minus, Trash2, Search, ShoppingCart,
   Check, Loader2, X, Package, ListChecks, ChevronRight,
-  CalendarClock, ShoppingBag, Receipt, AlertCircle,
+  CalendarClock, ShoppingBag, Receipt, AlertCircle, Truck,
 } from "lucide-react";
-import { listsApi, rohlikApi } from "@/lib/api";
+import { listsApi, rohlikApi, scheduleApi } from "@/lib/api";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -74,6 +74,14 @@ interface CartData {
   unmatched_count: number;
 }
 
+interface DeliverySlot {
+  date: string;       // ISO "2026-06-05"
+  day_of_week: number;
+  start_time: string;
+  end_time: string;
+  label: string | null;
+}
+
 // ── Frequency config ────────────────────────────────────────────────────────────
 
 const FREQUENCIES = [
@@ -102,6 +110,17 @@ function itemLabel(item: { rohlik_product_name: string | null; generic_name: str
 
 function pluralItems(n: number) {
   return n === 1 ? "položka" : n >= 2 && n <= 4 ? "položky" : "položek";
+}
+
+const DAYS_SHORT = ["Po", "Út", "St", "Čt", "Pá", "So", "Ne"];
+
+function formatSlotDate(slot: DeliverySlot) {
+  const d = new Date(slot.date + "T00:00:00");
+  return `${DAYS_SHORT[slot.day_of_week]} ${d.getDate()}. ${d.getMonth() + 1}.`;
+}
+
+function slotKey(slot: DeliverySlot) {
+  return `${slot.date}_${slot.start_time}`;
 }
 
 // ── Main page ─────────────────────────────────────────────────────────────────
@@ -1031,6 +1050,25 @@ function CartView({
   const [picker, setPicker] = useState<CartLine | null>(null);
   const [swapping, setSwapping] = useState(false);
 
+  // Delivery slot suggestions (from the user's schedule)
+  const [slots, setSlots] = useState<DeliverySlot[]>([]);
+  const [loadingSlots, setLoadingSlots] = useState(true);
+  const [selectedSlot, setSelectedSlot] = useState<DeliverySlot | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data } = await scheduleApi.getDeliverySlots();
+        setSlots(data);
+        if (data.length > 0) setSelectedSlot(data[0]); // default: nearest
+      } catch {
+        setSlots([]);
+      } finally {
+        setLoadingSlots(false);
+      }
+    })();
+  }, []);
+
   async function pickProduct(line: CartLine, product: RohlikProduct) {
     setSwapping(true);
     try {
@@ -1115,8 +1153,63 @@ function CartView({
         />
       )}
 
-      {/* Total + order */}
+      {/* Delivery slot selection */}
+      <div>
+        <div className="flex items-center gap-2 mb-2 px-1">
+          <Truck className="w-4 h-4 text-teal-600" />
+          <span className="text-sm font-semibold text-gray-700">Termín doručení</span>
+        </div>
+        {loadingSlots ? (
+          <div className="flex items-center gap-2 text-gray-400 text-sm py-3 px-1">
+            <Loader2 className="w-4 h-4 animate-spin" /> Hledám termíny podle rozvrhu…
+          </div>
+        ) : slots.length === 0 ? (
+          <div className="flex items-start gap-2 text-xs text-gray-500 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2.5">
+            <CalendarClock className="w-4 h-4 flex-shrink-0 mt-0.5 text-gray-400" />
+            <span>
+              Zatím nevíme, kdy jsi doma. Označ si v <strong>Rozvrhu</strong> sloty „Jsem doma" a
+              objeví se tu nejbližší termíny doručení.
+            </span>
+          </div>
+        ) : (
+          <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1">
+            {slots.map((slot) => {
+              const isSel = selectedSlot && slotKey(selectedSlot) === slotKey(slot);
+              return (
+                <button
+                  key={slotKey(slot)}
+                  onClick={() => setSelectedSlot(slot)}
+                  className={`flex-shrink-0 rounded-xl border-2 px-3 py-2 text-left transition-colors ${
+                    isSel
+                      ? "border-teal-500 bg-teal-50"
+                      : "border-gray-200 bg-white hover:border-teal-300"
+                  }`}
+                >
+                  <p className={`text-xs font-bold ${isSel ? "text-teal-700" : "text-gray-700"}`}>
+                    {formatSlotDate(slot)}
+                  </p>
+                  <p className={`text-xs mt-0.5 ${isSel ? "text-teal-600" : "text-gray-400"}`}>
+                    {slot.start_time}–{slot.end_time}
+                  </p>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Order summary + confirm */}
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm px-4 py-4 sticky bottom-4">
+        {selectedSlot && (
+          <div className="flex items-center justify-between mb-2 pb-2 border-b border-gray-100">
+            <span className="text-xs text-gray-400 flex items-center gap-1">
+              <Truck className="w-3.5 h-3.5" /> Doručení
+            </span>
+            <span className="text-sm font-medium text-gray-700">
+              {formatSlotDate(selectedSlot)} · {selectedSlot.start_time}–{selectedSlot.end_time}
+            </span>
+          </div>
+        )}
         <div className="flex items-center justify-between mb-3">
           <span className="text-sm text-gray-500">
             Celkem ({cart.matched_count} {pluralItems(cart.matched_count)})

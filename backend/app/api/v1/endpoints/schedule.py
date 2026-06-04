@@ -1,7 +1,8 @@
 """Schedule CRUD endpoints — stub for Phase 1, expanded in Phase 4."""
 import uuid
+from datetime import datetime, timedelta
 from typing import List
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Query
 from pydantic import BaseModel
 from sqlalchemy import select
 
@@ -39,6 +40,15 @@ class ScheduleSlotResponse(BaseModel):
     is_home: bool
 
 
+class DeliverySlotSuggestion(BaseModel):
+    """A concrete upcoming delivery window derived from a recurring home slot."""
+    date: str          # ISO date, e.g. "2026-06-05"
+    day_of_week: int   # 0=Monday … 6=Sunday
+    start_time: str    # "HH:MM"
+    end_time: str      # "HH:MM"
+    label: str | None
+
+
 @router.get("/", response_model=List[ScheduleSlotResponse])
 async def get_schedule(current_user: CurrentUser, db: DB):
     result = await db.execute(
@@ -56,6 +66,49 @@ async def get_schedule(current_user: CurrentUser, db: DB):
         label=s.label,
         is_home=s.is_home,
     ) for s in slots]
+
+
+@router.get("/delivery-slots", response_model=List[DeliverySlotSuggestion])
+async def get_delivery_suggestions(
+    current_user: CurrentUser, db: DB, days: int = Query(7, ge=1, le=21)
+):
+    """Upcoming concrete delivery windows derived from the user's home slots.
+
+    Each recurring "I'm home" slot is projected onto the next `days` calendar
+    days. Windows that have already ended today are skipped. Ordered by date,
+    then start time. (Phase 4: intersect these with real Rohlík slots.)
+    """
+    result = await db.execute(
+        select(ScheduleSlot).where(
+            ScheduleSlot.user_id == current_user.id,
+            ScheduleSlot.is_home == True,
+        ).order_by(ScheduleSlot.start_time)
+    )
+    home_slots = result.scalars().all()
+    if not home_slots:
+        return []
+
+    by_day: dict[int, list] = {}
+    for s in home_slots:
+        by_day.setdefault(int(s.day_of_week), []).append(s)
+
+    now = datetime.now()
+    today = now.date()
+    suggestions: List[DeliverySlotSuggestion] = []
+    for offset in range(days):
+        d = today + timedelta(days=offset)
+        weekday = d.weekday()  # 0=Monday
+        for s in by_day.get(weekday, []):
+            if offset == 0 and s.end_time <= now.time():
+                continue  # window already over today
+            suggestions.append(DeliverySlotSuggestion(
+                date=d.isoformat(),
+                day_of_week=weekday,
+                start_time=s.start_time.strftime("%H:%M"),
+                end_time=s.end_time.strftime("%H:%M"),
+                label=s.label,
+            ))
+    return suggestions
 
 
 @router.post("/", response_model=ScheduleSlotResponse, status_code=status.HTTP_201_CREATED)

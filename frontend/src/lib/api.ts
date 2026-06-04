@@ -103,6 +103,8 @@ export const rohlikApi = {
 
 export const scheduleApi = {
   getAll: () => api.get("/schedule/"),
+  getDeliverySlots: (days = 7) =>
+    api.get("/schedule/delivery-slots", { params: { days } }),
   create: (slot: {
     day_of_week: number;
     start_time: string;
