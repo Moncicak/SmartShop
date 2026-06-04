@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import {
   ArrowLeft, Plus, Minus, Trash2, Search, ShoppingCart,
   Check, Loader2, X, Package, ListChecks, ChevronRight,
-  CalendarClock, ShoppingBag,
+  CalendarClock, ShoppingBag, Receipt, AlertCircle,
 } from "lucide-react";
 import { listsApi, rohlikApi } from "@/lib/api";
 
@@ -51,6 +51,27 @@ interface RohlikProduct {
   sale_price: number | null;
   discount_percentage: number | null;
   sale_ends_at: string | null;
+}
+
+interface CartLine {
+  item_id: string;
+  label: string;
+  quantity: number;
+  unit: string | null;
+  is_generic: boolean;
+  source_list_id: string;
+  source_list_name: string;
+  source_frequency: string;
+  matched: RohlikProduct | null;
+  packages: number | null;
+  line_total: number | null;
+}
+
+interface CartData {
+  lines: CartLine[];
+  total: number;
+  matched_count: number;
+  unmatched_count: number;
 }
 
 // ── Frequency config ────────────────────────────────────────────────────────────
@@ -847,6 +868,11 @@ function ShoppingPanel() {
   const [loading, setLoading] = useState(true);
   const [marking, setMarking] = useState(false);
 
+  // Cart sub-view
+  const [view, setView] = useState<"list" | "cart">("list");
+  const [cart, setCart] = useState<CartData | null>(null);
+  const [building, setBuilding] = useState(false);
+
   async function load() {
     const { data } = await listsApi.getShopping();
     setItems(data.items);
@@ -864,11 +890,24 @@ function ShoppingPanel() {
     await listsApi.updateItem(item.source_list_id, item.id, { is_checked: !item.is_checked });
   }
 
+  async function buildCart() {
+    setBuilding(true);
+    try {
+      const { data } = await listsApi.getCart();
+      setCart(data);
+      setView("cart");
+    } finally {
+      setBuilding(false);
+    }
+  }
+
   async function markOrdered() {
     if (!confirm("Označit aktuální nákup jako objednaný? Měsíční a další seznamy se schovají, dokud znovu nepřijdou na řadu.")) return;
     setMarking(true);
     try {
       await listsApi.markOrdered();
+      setCart(null);
+      setView("list");
       await load();
     } finally {
       setMarking(false);
@@ -893,6 +932,19 @@ function ShoppingPanel() {
     );
   }
 
+  // Cart sub-view
+  if (view === "cart" && cart) {
+    return (
+      <CartView
+        cart={cart}
+        marking={marking}
+        onBack={() => setView("list")}
+        onOrdered={markOrdered}
+        onRebuild={buildCart}
+      />
+    );
+  }
+
   // Group items by source list
   const groups = new Map<string, { name: string; frequency: string; items: ShoppingItem[] }>();
   for (const it of items) {
@@ -914,7 +966,7 @@ function ShoppingPanel() {
             {total} {pluralItems(total)} k nákupu
           </p>
           <p className="text-xs text-gray-400 mt-0.5">
-            ze {groups.size} {groups.size === 1 ? "seznamu" : groups.size < 5 ? "seznamů" : "seznamů"}
+            ze {groups.size} {groups.size === 1 ? "seznamu" : "seznamů"}
             {done > 0 && ` · ${done} hotovo`}
           </p>
         </div>
@@ -927,6 +979,16 @@ function ShoppingPanel() {
           Objednáno
         </button>
       </div>
+
+      {/* Build cart action */}
+      <button
+        onClick={buildCart}
+        disabled={building}
+        className="w-full flex items-center justify-center gap-2 py-3 rounded-xl border-2 border-orange-200 bg-orange-50 text-orange-600 hover:bg-orange-100 disabled:opacity-50 transition-colors text-sm font-medium"
+      >
+        {building ? <Loader2 className="w-4 h-4 animate-spin" /> : <Receipt className="w-4 h-4" />}
+        {building ? "Sestavuji košík na Rohlíku…" : "Sestavit košík a spočítat cenu"}
+      </button>
 
       {/* Grouped items */}
       {Array.from(groups.entries()).map(([listId, group]) => {
@@ -947,6 +1009,342 @@ function ShoppingPanel() {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// ── Cart view (priced) ──────────────────────────────────────────────────────────
+
+function CartView({
+  cart,
+  marking,
+  onBack,
+  onOrdered,
+  onRebuild,
+}: {
+  cart: CartData;
+  marking: boolean;
+  onBack: () => void;
+  onOrdered: () => void;
+  onRebuild: () => void;
+}) {
+  const [picker, setPicker] = useState<CartLine | null>(null);
+  const [swapping, setSwapping] = useState(false);
+
+  async function pickProduct(line: CartLine, product: RohlikProduct) {
+    setSwapping(true);
+    try {
+      await listsApi.updateItem(line.source_list_id, line.item_id, {
+        rohlik_product_id: product.id,
+        rohlik_product_name: product.name,
+        rohlik_image_url: product.image_url ?? undefined,
+      });
+      setPicker(null);
+      onRebuild(); // re-price the cart with the new product
+    } finally {
+      setSwapping(false);
+    }
+  }
+
+  // Group lines by source list, preserving order
+  const groups = new Map<string, { name: string; frequency: string; lines: CartLine[] }>();
+  for (const line of cart.lines) {
+    if (!groups.has(line.source_list_id)) {
+      groups.set(line.source_list_id, {
+        name: line.source_list_name,
+        frequency: line.source_frequency,
+        lines: [],
+      });
+    }
+    groups.get(line.source_list_id)!.lines.push(line);
+  }
+
+  return (
+    <div className="space-y-5">
+      {/* Header */}
+      <div className="flex items-center gap-2">
+        <button
+          onClick={onBack}
+          className="flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 transition-colors"
+        >
+          <ArrowLeft className="w-4 h-4" />
+          Zpět na seznam
+        </button>
+        <ChevronRight className="w-3.5 h-3.5 text-gray-300" />
+        <span className="font-semibold text-gray-900">Návrh košíku</span>
+      </div>
+
+      {/* Unmatched warning */}
+      {cart.unmatched_count > 0 && (
+        <div className="flex items-start gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+          <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+          <span>
+            {cart.unmatched_count} {pluralItems(cart.unmatched_count)} se nepodařilo najít na Rohlíku —
+            cena je tak pouze orientační. Můžeš je upřesnit přes záložku Rohlík v daném seznamu.
+          </span>
+        </div>
+      )}
+
+      {/* Grouped priced lines */}
+      {Array.from(groups.entries()).map(([listId, group]) => {
+        const cfg = freqCfg(group.frequency);
+        return (
+          <div key={listId}>
+            <div className="flex items-center gap-2 mb-2 px-1">
+              <span className="text-sm font-semibold text-gray-700">{group.name}</span>
+              <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${FREQ_BADGE[cfg.color]}`}>
+                {cfg.label}
+              </span>
+            </div>
+            <div className="space-y-2">
+              {group.lines.map((line) => (
+                <CartLineRow key={line.item_id} line={line} onSwap={() => setPicker(line)} />
+              ))}
+            </div>
+          </div>
+        );
+      })}
+
+      {/* Product picker modal */}
+      {picker && (
+        <ProductPickerModal
+          line={picker}
+          swapping={swapping}
+          onPick={(p) => pickProduct(picker, p)}
+          onClose={() => setPicker(null)}
+        />
+      )}
+
+      {/* Total + order */}
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm px-4 py-4 sticky bottom-4">
+        <div className="flex items-center justify-between mb-3">
+          <span className="text-sm text-gray-500">
+            Celkem ({cart.matched_count} {pluralItems(cart.matched_count)})
+          </span>
+          <span className="text-2xl font-bold text-gray-900">
+            {cart.total.toFixed(2)} Kč
+          </span>
+        </div>
+        <button
+          onClick={onOrdered}
+          disabled={marking}
+          className="w-full flex items-center justify-center gap-2 px-3 py-2.5 bg-green-600 hover:bg-green-700 disabled:opacity-40 text-white text-sm font-semibold rounded-lg transition-colors"
+        >
+          {marking ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+          Objednáno
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function fmtNum(n: number) {
+  return n % 1 === 0 ? String(n) : n.toFixed(1);
+}
+
+function CartLineRow({ line, onSwap }: { line: CartLine; onSwap: () => void }) {
+  const m = line.matched;
+  const onSale = !!m?.sale_price && m.sale_price < m.price;
+  // What the user asked for, e.g. "500 g" or "2 ks"
+  const requested = `${fmtNum(line.quantity)}${line.unit ? " " + line.unit : "×"}`;
+  // How many packages we'll buy, e.g. "5× 100 g"
+  const packLabel = m && line.packages ? `${fmtNum(line.packages)}× ${m.unit}` : null;
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm px-3 py-3 flex items-center gap-3">
+      {/* Image */}
+      <div className="w-12 h-12 rounded-lg bg-gray-50 border border-gray-100 flex-shrink-0 overflow-hidden flex items-center justify-center">
+        {m?.image_url ? (
+          <img
+            src={m.image_url}
+            alt={m.name}
+            loading="lazy"
+            className="w-full h-full object-contain p-0.5"
+            onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+          />
+        ) : (
+          <span className="text-lg opacity-40">🛒</span>
+        )}
+      </div>
+
+      {/* Info */}
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-medium text-gray-900 leading-tight truncate">
+          {m ? m.name : line.label}
+        </p>
+        <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+          {packLabel ? (
+            <span className="text-xs font-medium text-gray-600">{packLabel}</span>
+          ) : (
+            <span className="text-xs text-gray-400">{requested}</span>
+          )}
+          {line.is_generic && (
+            <span className="text-xs text-gray-400">· chci {requested}</span>
+          )}
+          {m && (
+            <span className={`text-xs ${onSale ? "text-orange-600 font-medium" : "text-gray-500"}`}>
+              · {(onSale ? m.sale_price! : m.price).toFixed(2)} Kč/{m.unit}
+            </span>
+          )}
+          {!m && <span className="text-xs text-amber-600">· nenalezeno na Rohlíku</span>}
+        </div>
+      </div>
+
+      {/* Line total + swap */}
+      <div className="text-right flex-shrink-0 flex flex-col items-end gap-1">
+        {line.line_total !== null ? (
+          <span className="text-sm font-semibold text-gray-900">{line.line_total.toFixed(2)} Kč</span>
+        ) : (
+          <span className="text-sm text-gray-300">—</span>
+        )}
+        <button
+          onClick={onSwap}
+          className="text-xs text-blue-500 hover:text-blue-700 transition-colors"
+        >
+          Změnit
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Product picker modal (manual swap) ──────────────────────────────────────────
+
+function ProductPickerModal({
+  line,
+  swapping,
+  onPick,
+  onClose,
+}: {
+  line: CartLine;
+  swapping: boolean;
+  onPick: (product: RohlikProduct) => void;
+  onClose: () => void;
+}) {
+  const [query, setQuery] = useState(line.label);
+  const [results, setResults] = useState<RohlikProduct[]>([]);
+  const [loading, setLoading] = useState(true);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (query.trim().length < 2) {
+      setResults([]);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(async () => {
+      try {
+        const { data } = await rohlikApi.search(query);
+        setResults(data);
+      } catch {
+        setResults([]);
+      } finally {
+        setLoading(false);
+      }
+    }, 350);
+  }, [query]);
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-2xl shadow-2xl w-full max-w-lg flex flex-col max-h-[80vh]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between p-4 border-b border-gray-100">
+          <div className="min-w-0">
+            <h2 className="font-bold text-gray-900">Vybrat produkt</h2>
+            <p className="text-xs text-gray-400 truncate">pro „{line.label}" · chci {fmtNum(line.quantity)} {line.unit || "ks"}</p>
+          </div>
+          <button onClick={onClose} className="p-1.5 hover:bg-gray-100 rounded-lg flex-shrink-0">
+            <X className="w-4 h-4 text-gray-400" />
+          </button>
+        </div>
+
+        {/* Search */}
+        <div className="p-4 pb-2">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <input
+              autoFocus
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Hledat na Rohlíku…"
+              className="w-full pl-9 pr-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-orange-400"
+            />
+          </div>
+        </div>
+
+        {/* Results */}
+        <div className="flex-1 overflow-y-auto px-4 pb-4 space-y-2 relative">
+          {swapping && (
+            <div className="absolute inset-0 bg-white/70 z-10 flex items-center justify-center">
+              <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
+            </div>
+          )}
+          {loading ? (
+            <div className="flex items-center justify-center py-8 text-gray-400 gap-2">
+              <Loader2 className="w-5 h-5 animate-spin" />
+              <span className="text-sm">Hledám…</span>
+            </div>
+          ) : results.length === 0 ? (
+            <div className="text-center py-8 text-gray-400 text-sm">Žádné výsledky.</div>
+          ) : (
+            results.map((p) => {
+              const onSale = !!p.sale_price && p.sale_price < p.price;
+              const isCurrent = line.matched?.id === p.id;
+              return (
+                <button
+                  key={p.id}
+                  onClick={() => !isCurrent && onPick(p)}
+                  disabled={isCurrent}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border text-left transition-colors ${
+                    isCurrent
+                      ? "border-green-300 bg-green-50 cursor-default"
+                      : "border-gray-200 hover:border-orange-300 hover:bg-orange-50"
+                  }`}
+                >
+                  <div className="w-11 h-11 rounded-lg bg-gray-50 border border-gray-100 flex-shrink-0 overflow-hidden flex items-center justify-center">
+                    {p.image_url ? (
+                      <img
+                        src={p.image_url}
+                        alt={p.name}
+                        loading="lazy"
+                        className="w-full h-full object-contain p-0.5"
+                        onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+                      />
+                    ) : (
+                      <span className="text-lg opacity-40">🛒</span>
+                    )}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-gray-900 leading-tight truncate">{p.name}</p>
+                    <div className="flex items-center gap-1.5 mt-0.5">
+                      <span className={`text-xs ${onSale ? "text-orange-600 font-medium" : "text-gray-500"}`}>
+                        {(onSale ? p.sale_price! : p.price).toFixed(2)} Kč
+                      </span>
+                      <span className="text-xs text-gray-400">/ {p.unit}</span>
+                      {!p.in_stock && <span className="text-xs text-red-400">· není skladem</span>}
+                    </div>
+                  </div>
+                  {isCurrent ? (
+                    <span className="text-xs text-green-600 font-medium flex-shrink-0 flex items-center gap-1">
+                      <Check className="w-3 h-3" /> Vybráno
+                    </span>
+                  ) : (
+                    <Plus className="w-4 h-4 text-gray-300 flex-shrink-0" />
+                  )}
+                </button>
+              );
+            })
+          )}
+        </div>
+      </div>
     </div>
   );
 }

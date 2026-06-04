@@ -62,6 +62,9 @@ export const listsApi = {
   getShopping: () => api.get("/lists/shopping"),
   markOrdered: () => api.post("/lists/shopping/mark-ordered"),
 
+  // Priced cart: resolves items to Rohlík products + totals (slower, hits Rohlík)
+  getCart: () => api.get("/lists/shopping/cart"),
+
   addItem: (
     listId: string,
     item: {
@@ -78,7 +81,15 @@ export const listsApi = {
   updateItem: (
     listId: string,
     itemId: string,
-    patch: { quantity?: number; unit?: string; notes?: string; is_checked?: boolean }
+    patch: {
+      quantity?: number;
+      unit?: string;
+      notes?: string;
+      is_checked?: boolean;
+      rohlik_product_id?: string;
+      rohlik_product_name?: string;
+      rohlik_image_url?: string;
+    }
   ) => api.patch(`/lists/${listId}/items/${itemId}`, patch),
 
   deleteItem: (listId: string, itemId: string) =>

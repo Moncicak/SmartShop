@@ -1,5 +1,7 @@
 """Shopping list CRUD endpoints."""
 import uuid
+import re
+import math
 from datetime import datetime, timezone
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException, status, Query
@@ -34,6 +36,87 @@ def _is_due(sl: ShoppingList, now: datetime) -> bool:
     return (now - last).days >= interval
 
 
+# ── Unit-aware quantity → number of packages ────────────────────────────────────
+# A requested amount (e.g. "500 g") is compared against a product's package size
+# (e.g. "100 g") to figure out how many packages to buy — instead of naively
+# multiplying the package price by the raw quantity.
+
+_MASS = {"g": 1.0, "dkg": 10.0, "kg": 1000.0}          # → grams
+_VOLUME = {"ml": 1.0, "cl": 10.0, "dl": 100.0, "l": 1000.0}  # → millilitres
+
+
+def _normalize(value: float, unit: Optional[str]) -> tuple[float, str]:
+    """Return (value_in_base_unit, kind) where kind is mass | volume | count."""
+    u = (unit or "").strip().lower()
+    if u in _MASS:
+        return value * _MASS[u], "mass"
+    if u in _VOLUME:
+        return value * _VOLUME[u], "volume"
+    return value, "count"
+
+
+def _parse_pack_size(text: Optional[str]) -> Optional[tuple[float, str]]:
+    """Parse a product's textual amount ("250 g", "1,5 l", "6 ks") → (value, kind)."""
+    if not text:
+        return None
+    m = re.match(r"\s*([\d.,\s]+?)\s*([a-zA-Zěščřžýáíéůú]+)", text)
+    if not m:
+        return None
+    try:
+        num = float(m.group(1).replace(" ", "").replace(",", "."))
+    except ValueError:
+        return None
+    return _normalize(num, m.group(2))
+
+
+def _packages_needed(req_qty: float, req_unit: Optional[str], pack_text: Optional[str]) -> float:
+    """How many packages of `pack_text` cover a request of `req_qty req_unit`.
+
+    Falls back to treating req_qty as a package count when units are missing or
+    incompatible (e.g. user asked in grams but the pack is sold per litre).
+    """
+    req_val, req_kind = _normalize(req_qty, req_unit)
+    pack = _parse_pack_size(pack_text)
+    if req_kind == "count" or pack is None:
+        return max(req_qty, 1.0)
+    pack_val, pack_kind = pack
+    if req_kind != pack_kind or pack_val <= 0:
+        return max(req_qty, 1.0)
+    return float(math.ceil(req_val / pack_val))
+
+
+def _pick_match(item, results: list):
+    """Choose the best Rohlík product for a shopping item from search results.
+
+    - Existing Rohlík item → match by stored product id.
+    - Generic item with a weight/volume amount → pick the package size that
+      fits the requested amount with the least overshoot (e.g. 500 ml → a 0.5 l
+      carton rather than a 1 l one), tie-broken by cheaper total then fewer packages.
+    - Otherwise → top search result.
+    """
+    if not results:
+        return None
+    if item.rohlik_product_id:
+        return next((p for p in results if p.id == item.rohlik_product_id), results[0])
+
+    req_val, req_kind = _normalize(item.quantity, item.unit)
+    if req_kind in ("mass", "volume"):
+        scored = []
+        for p in results:
+            pack = _parse_pack_size(p.unit)
+            if not pack or pack[1] != req_kind or pack[0] <= 0:
+                continue
+            packages = math.ceil(req_val / pack[0])
+            overshoot = packages * pack[0] - req_val
+            eff = p.sale_price if p.sale_price else p.price
+            scored.append((overshoot, eff * packages, packages, p))
+        if scored:
+            scored.sort(key=lambda s: (s[0], s[1], s[2]))
+            return scored[0][3]
+
+    return results[0]
+
+
 # ── Schemas ───────────────────────────────────────────────────────────────────
 
 class ShoppingListCreate(BaseModel):
@@ -63,6 +146,10 @@ class ListItemUpdate(BaseModel):
     unit: Optional[str] = None
     notes: Optional[str] = None
     is_checked: Optional[bool] = None
+    # Pin a specific Rohlík product to this item (manual swap from the cart)
+    rohlik_product_id: Optional[str] = None
+    rohlik_product_name: Optional[str] = None
+    rohlik_image_url: Optional[str] = None
 
 
 class ListItemResponse(BaseModel):
@@ -119,6 +206,29 @@ class RohlikProduct(BaseModel):
     sale_ends_at: Optional[str] = None
 
 
+class CartLine(BaseModel):
+    """One shopping item resolved to a concrete Rohlík product with a price."""
+    item_id: str
+    label: str
+    quantity: float
+    unit: Optional[str]
+    is_generic: bool
+    source_list_id: str
+    source_list_name: str
+    source_frequency: str
+    matched: Optional[RohlikProduct] = None  # best Rohlík match (None if not found)
+    packages: Optional[float] = None          # how many packages cover the request
+    line_total: Optional[float] = None        # effective price × packages
+
+
+class Cart(BaseModel):
+    """Priced cart built from the currently-due shopping items."""
+    lines: List[CartLine] = []
+    total: float = 0.0
+    matched_count: int = 0
+    unmatched_count: int = 0
+
+
 # ── Shopping Lists ─────────────────────────────────────────────────────────────
 
 def _list_to_response(sl: ShoppingList, item_count: int = 0) -> ShoppingListResponse:
@@ -157,38 +267,44 @@ async def create_shopping_list(body: ShoppingListCreate, current_user: CurrentUs
 # ── Merged shopping view ───────────────────────────────────────────────────────
 # NOTE: must be declared before "/{list_id}" so the literal path wins routing.
 
-@router.get("/shopping", response_model=ShoppingView)
-async def get_shopping_view(current_user: CurrentUser, db: DB):
-    """All items from lists that are currently due, merged into one view."""
+async def _due_items(db, user) -> List[tuple[ListItem, ShoppingList]]:
+    """All (item, source_list) pairs from the user's currently-due lists."""
     now = datetime.now(timezone.utc)
     result = await db.execute(
         select(ShoppingList)
-        .where(ShoppingList.user_id == current_user.id, ShoppingList.is_active == True)
+        .where(ShoppingList.user_id == user.id, ShoppingList.is_active == True)
         .order_by(ShoppingList.created_at)
     )
     due_lists = [sl for sl in result.scalars().all() if _is_due(sl, now)]
     if not due_lists:
-        return ShoppingView(items=[], list_ids=[])
-
+        return []
     items_result = await db.execute(
         select(ListItem)
         .where(ListItem.list_id.in_([sl.id for sl in due_lists]))
         .order_by(ListItem.created_at)
     )
     by_list = {sl.id: sl for sl in due_lists}
+    return [(i, by_list[i.list_id]) for i in items_result.scalars().all()]
+
+
+@router.get("/shopping", response_model=ShoppingView)
+async def get_shopping_view(current_user: CurrentUser, db: DB):
+    """All items from lists that are currently due, merged into one view."""
+    pairs = await _due_items(db, current_user)
     items = [
         ShoppingItem(
             id=str(i.id), list_id=str(i.list_id),
             generic_name=i.generic_name, rohlik_product_id=i.rohlik_product_id,
             rohlik_product_name=i.rohlik_product_name, rohlik_image_url=i.rohlik_image_url,
             quantity=i.quantity, unit=i.unit, notes=i.notes, is_checked=i.is_checked,
-            source_list_id=str(i.list_id),
-            source_list_name=by_list[i.list_id].name,
-            source_frequency=by_list[i.list_id].frequency.value,
+            source_list_id=str(sl.id),
+            source_list_name=sl.name,
+            source_frequency=sl.frequency.value,
         )
-        for i in items_result.scalars().all()
+        for i, sl in pairs
     ]
-    return ShoppingView(items=items, list_ids=[str(sl.id) for sl in due_lists])
+    list_ids = list(dict.fromkeys(str(sl.id) for _, sl in pairs))
+    return ShoppingView(items=items, list_ids=list_ids)
 
 
 @router.post("/shopping/mark-ordered", response_model=ShoppingView)
@@ -216,6 +332,64 @@ async def mark_shopping_ordered(current_user: CurrentUser, db: DB):
         )
     await db.flush()
     return ShoppingView(items=[], list_ids=[])
+
+
+@router.get("/shopping/cart", response_model=Cart)
+async def build_cart(current_user: CurrentUser, db: DB):
+    """Resolve every due item to a concrete Rohlík product and price the cart.
+
+    Generic items ("mléko") are matched by searching their name; existing
+    Rohlík items are re-priced by matching their stored product id among the
+    search results (falling back to the top hit).
+    """
+    from app.services.rohlik_client import rohlik
+
+    pairs = await _due_items(db, current_user)
+    lines: List[CartLine] = []
+    total = 0.0
+    matched_count = 0
+
+    for item, sl in pairs:
+        is_generic = item.rohlik_product_id is None
+        label = item.rohlik_product_name or item.generic_name or "?"
+        # Pinned product → search its name so _pick_match finds it by id;
+        # otherwise search the generic term ("mléko").
+        query = item.rohlik_product_name or item.generic_name or ""
+
+        results = await rohlik.search(query, limit=20) if query.strip() else []
+        matched = _pick_match(item, results)
+
+        line_total = None
+        packages = None
+        matched_schema = None
+        if matched:
+            eff_price = matched.sale_price if matched.sale_price else matched.price
+            packages = _packages_needed(item.quantity, item.unit, matched.unit)
+            line_total = round(eff_price * packages, 2)
+            total += line_total
+            matched_count += 1
+            matched_schema = _to_schema(matched)
+
+        lines.append(CartLine(
+            item_id=str(item.id),
+            label=label,
+            quantity=item.quantity,
+            unit=item.unit,
+            is_generic=is_generic,
+            source_list_id=str(sl.id),
+            source_list_name=sl.name,
+            source_frequency=sl.frequency.value,
+            matched=matched_schema,
+            packages=packages,
+            line_total=line_total,
+        ))
+
+    return Cart(
+        lines=lines,
+        total=round(total, 2),
+        matched_count=matched_count,
+        unmatched_count=len(pairs) - matched_count,
+    )
 
 
 @router.get("/{list_id}", response_model=ShoppingListDetailResponse)
@@ -350,6 +524,11 @@ async def update_item(
         item.notes = body.notes
     if body.is_checked is not None:
         item.is_checked = body.is_checked
+    # Manual product swap: pin a concrete Rohlík product to this item.
+    if body.rohlik_product_id is not None:
+        item.rohlik_product_id = body.rohlik_product_id
+        item.rohlik_product_name = body.rohlik_product_name
+        item.rohlik_image_url = body.rohlik_image_url
 
     await db.flush()
     return ListItemResponse(
