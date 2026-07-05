@@ -18,8 +18,8 @@ celery==5.4.0
 celery[redis]==5.4.0
 
 # AI
-anthropic==0.39.0
-langgraph==0.2.56
+anthropic>=0.79.0
+openai>=1.60.0  # used for Gemini via its OpenAI-compatible endpoint
 
 # MCP client (for Rohlík MCP server over stdio)
 mcp==1.1.2

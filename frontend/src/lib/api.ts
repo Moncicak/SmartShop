@@ -119,6 +119,13 @@ export const rohlikMcpApi = {
   pushCart: () => api.post("/rohlik-mcp/cart"),
 };
 
+export const chatApi = {
+  getHistory: () => api.get("/chat/"),
+  send: (message: string) =>
+    api.post("/chat/", { message }, { timeout: 180_000 }), // agent může běžet dlouho
+  clear: () => api.delete("/chat/"),
+};
+
 export const scheduleApi = {
   getAll: () => api.get("/schedule/"),
   getDeliverySlots: (days = 7) =>

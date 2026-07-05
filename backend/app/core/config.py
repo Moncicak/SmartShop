@@ -40,8 +40,29 @@ class Settings(BaseSettings):
     ROHLIK_PASSWORD: str = ""
     ROHLIK_BASE_URL: str = "https://www.rohlik.cz"
 
-    # AI
+    # AI — agent provider: "gemini" (free tier) or "anthropic"; "auto" picks by available key
+    AGENT_PROVIDER: str = "auto"
     ANTHROPIC_API_KEY: str = ""
+    ANTHROPIC_MODEL: str = "claude-opus-4-8"
+    GEMINI_API_KEY: str = ""
+    GEMINI_MODEL: str = "gemini-2.5-flash"
+
+    def _key_is_set(self, key: str) -> bool:
+        return bool(key) and not key.startswith("your-")
+
+    @property
+    def agent_provider(self) -> str | None:
+        """Resolved provider, or None when no usable API key is configured."""
+        if self.AGENT_PROVIDER == "anthropic" and self._key_is_set(self.ANTHROPIC_API_KEY):
+            return "anthropic"
+        if self.AGENT_PROVIDER == "gemini" and self._key_is_set(self.GEMINI_API_KEY):
+            return "gemini"
+        if self.AGENT_PROVIDER == "auto":
+            if self._key_is_set(self.GEMINI_API_KEY):
+                return "gemini"
+            if self._key_is_set(self.ANTHROPIC_API_KEY):
+                return "anthropic"
+        return None
 
     # Revolut
     REVOLUT_CLIENT_ID: str = ""
