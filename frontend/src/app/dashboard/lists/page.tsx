@@ -5,9 +5,9 @@ import { useRouter } from "next/navigation";
 import {
   ArrowLeft, Plus, Minus, Trash2, Search, ShoppingCart,
   Check, Loader2, X, Package, ListChecks, ChevronRight,
-  CalendarClock, ShoppingBag, Receipt, AlertCircle, Truck, History, Tag,
+  CalendarClock, ShoppingBag, Receipt, AlertCircle, Truck, History, Tag, MapPin,
 } from "lucide-react";
-import { listsApi, rohlikApi, scheduleApi, ordersApi } from "@/lib/api";
+import { listsApi, rohlikApi, scheduleApi, ordersApi, rohlikMcpApi } from "@/lib/api";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -39,6 +39,15 @@ interface ShoppingItem extends ListItem {
   source_list_id: string;
   source_list_name: string;
   source_frequency: string;
+}
+
+interface RohlikPushResult {
+  pushed: number;
+  failed: string[];
+  skipped: number;
+  cart_total: number | null;
+  cart_items: number | null;
+  cart_url: string;
 }
 
 interface RohlikProduct {
@@ -923,6 +932,8 @@ function ShoppingPanel() {
   const [view, setView] = useState<"list" | "cart">("list");
   const [cart, setCart] = useState<CartData | null>(null);
   const [building, setBuilding] = useState(false);
+  // Result of the last push to the real Rohlík cart (shown as a banner)
+  const [rohlikPush, setRohlikPush] = useState<RohlikPushResult | null>(null);
 
   async function load() {
     const { data } = await listsApi.getShopping();
@@ -952,15 +963,20 @@ function ShoppingPanel() {
     }
   }
 
-  async function placeOrder(delivery?: {
-    delivery_date?: string;
-    delivery_start?: string;
-    delivery_end?: string;
-  }) {
-    if (!confirm("Objednat tento nákup? Uloží se do historie a seznamy se uzavřou do dalšího cyklu.")) return;
+  async function placeOrder(
+    delivery?: {
+      delivery_date?: string;
+      delivery_start?: string;
+      delivery_end?: string;
+    },
+    opts?: { skipConfirm?: boolean; rohlikPush?: RohlikPushResult }
+  ) {
+    if (!opts?.skipConfirm &&
+        !confirm("Objednat tento nákup? Uloží se do historie a seznamy se uzavřou do dalšího cyklu.")) return;
     setMarking(true);
     try {
       await ordersApi.create(delivery);
+      if (opts?.rohlikPush) setRohlikPush(opts.rohlikPush);
       setCart(null);
       setView("list");
       await load();
@@ -1014,6 +1030,46 @@ function ShoppingPanel() {
 
   return (
     <div className="space-y-5">
+      {/* Rohlík push success banner */}
+      {rohlikPush && (
+        <div className="bg-green-50 border border-green-200 rounded-xl px-4 py-3">
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex items-start gap-2">
+              <span className="text-lg leading-none mt-0.5">🎉</span>
+              <div>
+                <p className="text-sm font-semibold text-green-800">
+                  Košík na Rohlíku je připravený
+                </p>
+                <p className="text-xs text-green-700 mt-0.5">
+                  {rohlikPush.pushed} {pluralItems(rohlikPush.pushed)} posláno
+                  {rohlikPush.cart_total != null && ` · celkem ${rohlikPush.cart_total.toFixed(2)} Kč`}
+                  {rohlikPush.failed.length > 0 && ` · ${rohlikPush.failed.length} se nepodařilo přidat`}
+                </p>
+                {rohlikPush.failed.length > 0 && (
+                  <p className="text-xs text-red-500 mt-0.5">
+                    Nepřidáno: {rohlikPush.failed.join(", ")}
+                  </p>
+                )}
+              </div>
+            </div>
+            <button
+              onClick={() => setRohlikPush(null)}
+              className="text-green-400 hover:text-green-600 flex-shrink-0"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <a
+            href={rohlikPush.cart_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-semibold rounded-lg transition-colors"
+          >
+            Dokončit objednávku na Rohlíku →
+          </a>
+        </div>
+      )}
+
       {/* Summary banner */}
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm px-4 py-3 flex items-center justify-between">
         <div>
@@ -1080,34 +1136,72 @@ function CartView({
   cart: CartData;
   marking: boolean;
   onBack: () => void;
-  onOrdered: (delivery?: {
-    delivery_date?: string;
-    delivery_start?: string;
-    delivery_end?: string;
-  }) => void;
+  onOrdered: (
+    delivery?: {
+      delivery_date?: string;
+      delivery_start?: string;
+      delivery_end?: string;
+    },
+    opts?: { skipConfirm?: boolean; rohlikPush?: RohlikPushResult }
+  ) => void;
   onRebuild: () => void;
 }) {
   const [picker, setPicker] = useState<CartLine | null>(null);
   const [swapping, setSwapping] = useState(false);
+  const [pushing, setPushing] = useState(false);
 
   // Delivery slot suggestions (from the user's schedule)
   const [slots, setSlots] = useState<DeliverySlot[]>([]);
   const [loadingSlots, setLoadingSlots] = useState(true);
   const [selectedSlot, setSelectedSlot] = useState<DeliverySlot | null>(null);
 
+  // Rohlík delivery addresses (only when the account is connected)
+  const [addresses, setAddresses] = useState<{ id: number; display: string }[]>([]);
+  const [selectedAddressId, setSelectedAddressId] = useState<number | null>(null);
+  const [switchingAddress, setSwitchingAddress] = useState(false);
+
+  async function loadSlots() {
+    setLoadingSlots(true);
+    try {
+      const { data } = await scheduleApi.getDeliverySlots();
+      setSlots(data);
+      setSelectedSlot(data.length > 0 ? data[0] : null); // default: nearest
+    } catch {
+      setSlots([]);
+    } finally {
+      setLoadingSlots(false);
+    }
+  }
+
   useEffect(() => {
+    loadSlots();
+    // Addresses are a Rohlík-connected extra — fail silently when not connected
     (async () => {
       try {
-        const { data } = await scheduleApi.getDeliverySlots();
-        setSlots(data);
-        if (data.length > 0) setSelectedSlot(data[0]); // default: nearest
+        const { data } = await rohlikMcpApi.getAddresses();
+        setAddresses(data.addresses);
+        setSelectedAddressId(data.selected_id);
       } catch {
-        setSlots([]);
-      } finally {
-        setLoadingSlots(false);
+        setAddresses([]);
       }
     })();
   }, []);
+
+  async function switchAddress(addressId: number) {
+    if (addressId === selectedAddressId) return;
+    setSwitchingAddress(true);
+    setSelectedAddressId(addressId); // optimistic
+    try {
+      await rohlikMcpApi.selectAddress(addressId);
+      await loadSlots(); // slots depend on the address
+    } catch {
+      // revert on failure
+      const { data } = await rohlikMcpApi.getAddresses().catch(() => ({ data: null }));
+      if (data) setSelectedAddressId(data.selected_id);
+    } finally {
+      setSwitchingAddress(false);
+    }
+  }
 
   async function pickProduct(line: CartLine, product: RohlikProduct) {
     setSwapping(true);
@@ -1199,6 +1293,25 @@ function CartView({
           <Truck className="w-4 h-4 text-teal-600" />
           <span className="text-sm font-semibold text-gray-700">Termín doručení</span>
         </div>
+
+        {/* Delivery address (Rohlík-connected accounts with saved addresses) */}
+        {addresses.length > 0 && (
+          <div className="flex items-center gap-2 mb-3 px-1">
+            <MapPin className="w-4 h-4 text-gray-400 flex-shrink-0" />
+            <select
+              value={selectedAddressId ?? ""}
+              onChange={(e) => switchAddress(Number(e.target.value))}
+              disabled={switchingAddress}
+              className="flex-1 text-sm text-gray-700 bg-white border border-gray-200 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-teal-400 disabled:opacity-50"
+            >
+              {addresses.map((a) => (
+                <option key={a.id} value={a.id}>{a.display}</option>
+              ))}
+            </select>
+            {switchingAddress && <Loader2 className="w-4 h-4 animate-spin text-gray-400 flex-shrink-0" />}
+          </div>
+        )}
+
         {loadingSlots ? (
           <div className="flex items-center gap-2 text-gray-400 text-sm py-3 px-1">
             <Loader2 className="w-4 h-4 animate-spin" /> Hledám termíny podle rozvrhu…
@@ -1258,24 +1371,75 @@ function CartView({
             {cart.total.toFixed(2)} Kč
           </span>
         </div>
-        <button
-          onClick={() =>
-            onOrdered(
-              selectedSlot
-                ? {
-                    delivery_date: selectedSlot.date,
-                    delivery_start: selectedSlot.start_time,
-                    delivery_end: selectedSlot.end_time,
-                  }
-                : undefined
-            )
-          }
-          disabled={marking}
-          className="w-full flex items-center justify-center gap-2 px-3 py-2.5 bg-green-600 hover:bg-green-700 disabled:opacity-40 text-white text-sm font-semibold rounded-lg transition-colors"
-        >
-          {marking ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-          Objednat
-        </button>
+        {addresses.length > 0 ? (
+          <>
+            <button
+              onClick={async () => {
+                if (!confirm("Poslat nákup do košíku na Rohlíku a uložit objednávku do historie?")) return;
+                setPushing(true);
+                try {
+                  const { data } = await rohlikMcpApi.pushCart();
+                  onOrdered(
+                    selectedSlot
+                      ? {
+                          delivery_date: selectedSlot.date,
+                          delivery_start: selectedSlot.start_time,
+                          delivery_end: selectedSlot.end_time,
+                        }
+                      : undefined,
+                    { skipConfirm: true, rohlikPush: data }
+                  );
+                } catch {
+                  alert("Nepodařilo se naplnit košík na Rohlíku. Zkus to znovu.");
+                } finally {
+                  setPushing(false);
+                }
+              }}
+              disabled={marking || pushing}
+              className="w-full flex items-center justify-center gap-2 px-3 py-2.5 bg-orange-500 hover:bg-orange-600 disabled:opacity-40 text-white text-sm font-semibold rounded-lg transition-colors"
+            >
+              {pushing || marking ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShoppingCart className="w-4 h-4" />}
+              {pushing ? "Plním košík na Rohlíku…" : "Objednat na Rohlíku"}
+            </button>
+            <button
+              onClick={() =>
+                onOrdered(
+                  selectedSlot
+                    ? {
+                        delivery_date: selectedSlot.date,
+                        delivery_start: selectedSlot.start_time,
+                        delivery_end: selectedSlot.end_time,
+                      }
+                    : undefined
+                )
+              }
+              disabled={marking || pushing}
+              className="w-full mt-2 flex items-center justify-center gap-1.5 px-3 py-2 text-gray-500 hover:text-gray-700 disabled:opacity-40 text-xs font-medium transition-colors"
+            >
+              <Check className="w-3.5 h-3.5" />
+              Jen uložit do historie (bez Rohlíku)
+            </button>
+          </>
+        ) : (
+          <button
+            onClick={() =>
+              onOrdered(
+                selectedSlot
+                  ? {
+                      delivery_date: selectedSlot.date,
+                      delivery_start: selectedSlot.start_time,
+                      delivery_end: selectedSlot.end_time,
+                    }
+                  : undefined
+              )
+            }
+            disabled={marking}
+            className="w-full flex items-center justify-center gap-2 px-3 py-2.5 bg-green-600 hover:bg-green-700 disabled:opacity-40 text-white text-sm font-semibold rounded-lg transition-colors"
+          >
+            {marking ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+            Objednat
+          </button>
+        )}
       </div>
     </div>
   );

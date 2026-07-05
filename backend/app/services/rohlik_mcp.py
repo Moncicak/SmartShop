@@ -106,7 +106,11 @@ async def verify_credentials(email: str, password: str) -> dict:
         tools, account = await asyncio.wait_for(_run(), timeout=CONNECT_TIMEOUT)
         if _looks_authenticated(account):
             return {"ok": True, "tools": tools, "error": None}
-        return {"ok": False, "tools": tools, "error": "Přihlášení selhalo — zkontroluj email a heslo."}
+        return {"ok": False, "tools": tools, "error": (
+            "Přihlášení se nezdařilo. Pokud jsou údaje správné, Rohlík ti právě poslal "
+            "potvrzovací e-mail (přihlášení z nového zařízení) — potvrď ho a zkus to znovu. "
+            "Jinak zkontroluj email a heslo."
+        )}
     except asyncio.TimeoutError:
         return {"ok": False, "tools": [], "error": "Časový limit při spojení s Rohlíkem."}
     except Exception as e:  # noqa: BLE001

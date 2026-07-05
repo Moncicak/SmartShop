@@ -1,7 +1,7 @@
 import uuid
 from typing import Optional, List
 
-from sqlalchemy import String, Boolean, Text
+from sqlalchemy import String, Boolean, Text, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
 
@@ -30,6 +30,8 @@ class User(Base, TimestampMixin):
     rohlik_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     rohlik_password_enc: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # Fernet-encrypted
     rohlik_connected: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Preferred Rohlík delivery address (their numeric id); None = account's active one
+    rohlik_address_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     # Firebase push token
     fcm_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

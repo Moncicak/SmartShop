@@ -114,6 +114,9 @@ export const rohlikMcpApi = {
   connect: (email: string, password: string) =>
     api.post("/rohlik-mcp/connect", { email, password }),
   disconnect: () => api.post("/rohlik-mcp/disconnect"),
+  getAddresses: () => api.get("/rohlik-mcp/addresses"),
+  selectAddress: (address_id: number) => api.put("/rohlik-mcp/address", { address_id }),
+  pushCart: () => api.post("/rohlik-mcp/cart"),
 };
 
 export const scheduleApi = {

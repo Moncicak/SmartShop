@@ -50,18 +50,53 @@ class DeliverySlotSuggestion(BaseModel):
 
 
 async def _mcp_delivery_suggestions(user, home_slots) -> Optional[List[DeliverySlotSuggestion]]:
-    """Real Rohlík delivery slots (via MCP) intersected with the user's home windows.
+    """Real Rohlík delivery slots intersected with the user's home windows.
 
-    Returns None → caller falls back to the schedule-based heuristic.
-
-    TODO(creds): with a connected account, decrypt the password, call
-    `rohlik_mcp.get_delivery_slots(email, password)`, parse the (currently unknown)
-    payload shape, and keep only windows overlapping an is_home slot — wrapped in a
-    timeout so a slow/failed MCP call never blocks the endpoint. For now we return
-    None *without* a round-trip so the cart view stays fast; the MCP plumbing itself
-    is verified via /rohlik-mcp/status?probe=true.
+    Uses the authenticated HTTP API (clean JSON, honours the user's chosen
+    delivery address). Returns None on any failure → caller falls back to the
+    schedule-based heuristic.
     """
-    return None
+    import asyncio
+
+    from app.core import crypto
+    from app.services import rohlik_account
+
+    try:
+        password = crypto.decrypt(user.rohlik_password_enc)
+        slots = await asyncio.wait_for(
+            rohlik_account.get_timeslots(user.rohlik_email, password, user.rohlik_address_id),
+            timeout=20,
+        )
+    except Exception:  # noqa: BLE001 — creds/network/parse issues → heuristic
+        return None
+    if not slots:
+        return None
+
+    # Home windows per weekday
+    by_day: dict[int, list] = {}
+    for s in home_slots:
+        by_day.setdefault(int(s.day_of_week), []).append(s)
+
+    suggestions: List[DeliverySlotSuggestion] = []
+    for slot in slots:
+        try:
+            since = datetime.strptime(slot["since"], "%Y-%m-%d %H:%M")
+            till = datetime.strptime(slot["till"], "%Y-%m-%d %H:%M")
+        except (KeyError, ValueError):
+            continue
+        # Keep slots fully inside one of the user's home windows that day
+        for home in by_day.get(since.weekday(), []):
+            if home.start_time <= since.time() and till.time() <= home.end_time:
+                suggestions.append(DeliverySlotSuggestion(
+                    date=since.date().isoformat(),
+                    day_of_week=since.weekday(),
+                    start_time=since.strftime("%H:%M"),
+                    end_time=till.strftime("%H:%M"),
+                    label=home.label,
+                ))
+                break
+
+    return suggestions or None
 
 
 @router.get("/", response_model=List[ScheduleSlotResponse])
